@@ -57,7 +57,8 @@ def load():
 def save(d):
     STORE.parent.mkdir(parents=True, exist_ok=True); STORE.write_text(json.dumps(d, indent=2))
 def hdr(s):
-    return {"x-api-key": s["keystring"], "Authorization": "Bearer " + s["access_token"], "Accept": "application/json"}
+    key = s.get("shared_secret") or s.get("keystring")
+    return {"x-api-key": key, "Authorization": "Bearer " + s["access_token"], "Accept": "application/json"}
 def etsy(s, method, path, data=None, form=False):
     return req(method, API + path, hdr(s), data, form)
 
@@ -71,8 +72,7 @@ def oauth(s):
     HTTPServer.allow_reuse_address = True
     httpd = HTTPServer(("127.0.0.1", 3003), CB)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    log("1. macOS: se chiede connessioni in ingresso -> Consenti")
-    log("2. Safari: premi Allow")
+    log("Safari: premi Allow")
     webbrowser.open(url)
     for _ in range(180):
         if CB.code or CB.error: break
@@ -86,7 +86,7 @@ def oauth(s):
     try: httpd.shutdown()
     except Exception: pass
     if CB.error: raise SystemExit("OAuth negato: " + str(CB.error))
-    if not CB.code: raise SystemExit("Nessun codice. Allow in Safari + Consenti al firewall.")
+    if not CB.code: raise SystemExit("Nessun codice. Allow in Safari.")
     tok = req("POST", API + "/public/oauth/token", {"Accept":"application/json"}, {"grant_type":"authorization_code","client_id":key,"redirect_uri":REDIRECT,"code":CB.code,"code_verifier":ver})
     s.update(keystring=key, access_token=tok["access_token"], refresh_token=tok.get("refresh_token")); save(s); log("Token salvato."); return s
 
@@ -117,8 +117,12 @@ def main():
     log("BJBeyondStudio - push Etsy")
     s = load()
     if not s.get("keystring"):
-        log("Redirect URI: " + REDIRECT); webbrowser.open("https://www.etsy.com/developers/register")
+        log("Redirect URI: " + REDIRECT); webbrowser.open("https://www.etsy.com/developers/your-apps")
         s["keystring"] = input("Keystring: ").strip(); save(s)
+    if not s.get("shared_secret"):
+        log("Stessa app, campo Shared secret (NON la Keystring).")
+        webbrowser.open("https://www.etsy.com/developers/your-apps")
+        s["shared_secret"] = input("Shared secret: ").strip(); save(s)
     s = oauth(s) if not s.get("access_token") else s
     me = etsy(s, "GET", "/application/users/me"); uid = me.get("user_id") or me.get("id")
     shops = etsy(s, "GET", "/application/users/%s/shops" % uid)
