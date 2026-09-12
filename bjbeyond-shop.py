@@ -8,10 +8,10 @@ REDIRECT = "http://localhost:3003/oauth/redirect"
 SCOPES = "listings_r listings_w shops_r shops_w"
 STORE = Path.home() / ".config" / "bjbeyond" / "etsy.json"
 API = "https://api.etsy.com/v3"
-ANNOUNCEMENT = "Digital products, delivered instantly. Live iPhone wallpapers, tools for couples, and commissioned cinematic pet portraits by BJ Beyond in Italy.\n\nCustom portraits: send your photo via Etsy Messages. Proof within 48 hours. One revision included.\n\nSolo digitale. Bozza ritratto entro 48 ore."
+ANNOUNCEMENT = "Digital products, delivered instantly. Live iPhone wallpapers, tools for couples, and commissioned cinematic pet portraits by BJ Beyond in Italy.\n\nCustom portraits: send your photo via Etsy Messages. Proof within 48 hours.\n\nSolo digitale. Bozza ritratto entro 48 ore."
 SECTIONS = ["Live Screens", "For Couples", "Pet Atelier", "Studio Notes"]
 LISTINGS = [
-    {"id": "4571332140", "sec": "Live Screens", "eur": 8.90, "was": "10 iPhone Live Wallpapers Bundle", "title": "iPhone Live Wallpaper Bundle | 10 Neon Lock Screens HEIC + MOV", "tags": "iphone wallpaper,live photo wallpaper,neon lock screen,animated wallpaper,heic wallpaper,lock screen pack,digital download,cosmic wallpaper,iphone background,live wallpaper,aesthetic lockscreen,neon phone art,dark lock screen", "desc": "Ten cinematic Live Photo wallpapers for iPhone. HEIC + MOV. Digital only. Not affiliated with Apple.\n\nDieci sfondi Live Photo neon."},
+    {"id": "4571332140", "sec": "Live Screens", "eur": 8.90, "was": "10 iPhone Live Wallpapers Bundle", "title": "iPhone Live Wallpaper Bundle | 10 Neon Lock Screens HEIC + MOV", "tags": "iphone wallpaper,live photo wallpaper,neon lock screen,animated wallpaper,heic wallpaper,lock screen pack,digital download,cosmic wallpaper,iphone background,live wallpaper,aesthetic lockscreen,neon phone art,dark lock screen", "desc": "Ten cinematic Live Photo wallpapers for iPhone. HEIC + MOV. Digital only. Not affiliated with Apple."},
     {"id": None, "sec": "Live Screens", "eur": 18.0, "was": "Digital Detox iPhone Bundle", "title": "Digital Detox iPhone Kit | Calming Wallpapers + Audio + Guide", "tags": "digital detox kit,calming wallpaper,iphone wellness,relaxing audio,mindfulness kit,lock screen calm,phone detox,self care download,ambient audio pack,slow living phone,focus wallpaper,wellness bundle,instant download", "desc": "MinDetox: calming lock screens, audio, guide. Not medical."},
     {"id": "4571927209", "sec": "For Couples", "eur": 12.0, "was": "Wedding Countdown App", "title": "Wedding Countdown App | Personalized HTML Timer for Couples", "tags": "wedding countdown,engaged couple gift,digital wedding app,countdown timer,bride to be gift,wedding date timer,html wedding gift,personalized wedding,engagement present,wedding day timer,couples countdown,instant download,offline wedding app", "desc": "Offline HTML wedding countdown. Names, date, daily lines."},
     {"id": None, "sec": "For Couples", "eur": 29.0, "was": "Interactive Wedding Planner App", "title": "Wedding Planner App | Guest List, Budget, Seating & Timeline", "tags": "wedding planner,digital planner,guest list app,seating chart,wedding budget,vendor tracker,wedding checklist,html wedding app,bride planner,offline planner,wedding timeline,couples planner,instant download", "desc": "Offline HTML wedding planner: guests, seating, budget, vendors, timeline."},
@@ -29,9 +29,8 @@ class CB(BaseHTTPRequestHandler):
     code = None
     error = None
     def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        q = urllib.parse.parse_qs(parsed.query)
-        if "code" in q or "error" in q or "oauth" in parsed.path:
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        if q.get("code") or q.get("error"):
             CB.code = (q.get("code") or [None])[0]
             CB.error = (q.get("error") or [None])[0]
         self.send_response(200); self.end_headers()
@@ -56,37 +55,57 @@ def load():
     return json.loads(STORE.read_text()) if STORE.exists() else {}
 def save(d):
     STORE.parent.mkdir(parents=True, exist_ok=True); STORE.write_text(json.dumps(d, indent=2))
-def hdr(s):
-    key = s.get("shared_secret") or s.get("keystring")
-    return {"x-api-key": key, "Authorization": "Bearer " + s["access_token"], "Accept": "application/json"}
+
+def api_keys(s):
+    ks = s.get("keystring") or ""
+    sec = s.get("shared_secret") or ""
+    out = []
+    if sec: out.append(sec)
+    if ks: out.append(ks)
+    if ks and sec: out.append(ks + ":" + sec)
+    seen = set(); keys = []
+    for k in out:
+        if k not in seen:
+            seen.add(k); keys.append(k)
+    return keys
+
+def hdr(s, api_key):
+    return {"x-api-key": api_key, "Authorization": "Bearer " + s["access_token"], "Accept": "application/json"}
+
 def etsy(s, method, path, data=None, form=False):
-    return req(method, API + path, hdr(s), data, form)
+    last = None
+    for api_key in api_keys(s):
+        try:
+            return req(method, API + path, hdr(s, api_key), data, form)
+        except RuntimeError as e:
+            last = e
+            if "403" not in str(e) and "401" not in str(e):
+                raise
+    raise last or RuntimeError("etsy fail")
 
 def oauth(s):
-    key = s.get("keystring") or input("Keystring app Etsy: ").strip()
+    key = s.get("keystring") or input("Keystring (app Personal access): ").strip()
     if not key: raise SystemExit("Manca la keystring.")
     CB.code = None; CB.error = None
     ver = b64url(os.urandom(32)); ch = b64url(hashlib.sha256(ver.encode()).digest()); st = secrets.token_urlsafe(16)
     qs = urllib.parse.urlencode({"response_type":"code","client_id":key,"redirect_uri":REDIRECT,"scope":SCOPES,"state":st,"code_challenge":ch,"code_challenge_method":"S256"})
-    url = "https://www.etsy.com/oauth/connect?" + qs
     HTTPServer.allow_reuse_address = True
     httpd = HTTPServer(("127.0.0.1", 3003), CB)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    log("Safari: premi Allow")
-    webbrowser.open(url)
+    log("Safari: Allow")
+    webbrowser.open("https://www.etsy.com/oauth/connect?" + qs)
     for _ in range(180):
         if CB.code or CB.error: break
         time.sleep(1)
     if not CB.code and not CB.error:
-        log("Copia dalla barra di Safari l'indirizzo localhost:3003 e incollalo qui.")
-        pasted = input("URL: ").strip()
+        pasted = input("URL localhost dalla barra Safari: ").strip()
         if pasted:
             q = urllib.parse.parse_qs(urllib.parse.urlparse(pasted).query)
             CB.code = (q.get("code") or [None])[0]; CB.error = (q.get("error") or [None])[0]
     try: httpd.shutdown()
     except Exception: pass
     if CB.error: raise SystemExit("OAuth negato: " + str(CB.error))
-    if not CB.code: raise SystemExit("Nessun codice. Allow in Safari.")
+    if not CB.code: raise SystemExit("Nessun codice.")
     tok = req("POST", API + "/public/oauth/token", {"Accept":"application/json"}, {"grant_type":"authorization_code","client_id":key,"redirect_uri":REDIRECT,"code":CB.code,"code_verifier":ver})
     s.update(keystring=key, access_token=tok["access_token"], refresh_token=tok.get("refresh_token")); save(s); log("Token salvato."); return s
 
@@ -116,15 +135,17 @@ def set_price(s, lid, price):
 def main():
     log("BJBeyondStudio - push Etsy")
     s = load()
-    if not s.get("keystring"):
-        log("Redirect URI: " + REDIRECT); webbrowser.open("https://www.etsy.com/developers/your-apps")
-        s["keystring"] = input("Keystring: ").strip(); save(s)
-    if not s.get("shared_secret"):
-        log("Stessa app, campo Shared secret (NON la Keystring).")
+    if not s.get("keystring") or not s.get("shared_secret") or not s.get("access_token"):
         webbrowser.open("https://www.etsy.com/developers/your-apps")
-        s["shared_secret"] = input("Shared secret: ").strip(); save(s)
-    s = oauth(s) if not s.get("access_token") else s
-    me = etsy(s, "GET", "/application/users/me"); uid = me.get("user_id") or me.get("id")
+        log("UNA sola app: Personal access. Stessa scheda per entrambe le chiavi.")
+        log("Callback URI deve essere: " + REDIRECT)
+        s["keystring"] = input("Keystring: ").strip()
+        s["shared_secret"] = input("Shared secret: ").strip()
+        s.pop("access_token", None); s.pop("refresh_token", None); save(s)
+        s = oauth(s)
+    me = etsy(s, "GET", "/application/users/me")
+    uid = me.get("user_id") or me.get("id")
+    log("user %s" % uid)
     shops = etsy(s, "GET", "/application/users/%s/shops" % uid)
     results = shops.get("results") or shops.get("shops") or ([shops] if shops.get("shop_id") else [])
     shop = next((x for x in results if str(x.get("shop_name","")).lower()=="bjbeyondstudio"), results[0] if results else None)
